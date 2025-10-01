@@ -4,37 +4,49 @@
 `include "cpu64_defs.vh"
 
 module cpu64_core_w_dcache_tb(
-    input clk,
-    input rst_n,
+    input clk_i,
+    input rst_ni,
     // DUT interface ports
     input                  m_ext_inter_i,
     input                  m_soft_inter_i,
     input                  m_timer_inter_i,
     input  [`XLEN-1:0]     time_i,
     output                 fencei_flush_ao,
-    // IMEM interface
-    output                 imem_req_o,
-    output [VADDR-1:0]     imem_addr_ao,
-    input                  imem_gnt_i,
-    input                  imem_rvalid_i,
-    input  [31:0]          imem_rdata_i,
-    // DMEM interface
-    output                 dmem_req_o,
-    output                 dmem_we_ao,
-    output [7:0]           dmem_be_ao,
-    output [VADDR-1:0]     dmem_addr_ao,
-    output [`XLEN-1:0]     dmem_wdata_ao,
-    input                  dmem_rvalid_i,
-    input  [`XLEN-1:0]     dmem_rdata_i,
-    input                  dmem_gnt_i
+    // IMEM interface (from testbench perspective, opposite of DUT)
+    input                  imem_req_o,
+    output                 imem_gnt_i,
+    input  [VADDR-1:0]     imem_addr_ao,
+    output                 imem_rvalid_i,
+    output [31:0]          imem_rdata_i,
+    // DMEM interface (from testbench perspective, opposite of DUT)
+    input                  dmem_req_o,
+    output                 dmem_gnt_i,
+    input  [VADDR-1:0]     dmem_addr_ao,
+    input                  dmem_we_ao,
+    input  [7:0]           dmem_be_ao,
+    input  [`XLEN-1:0]     dmem_wdata_ao,
+    output                 dmem_rvalid_i,
+    output [`XLEN-1:0]     dmem_rdata_i
 );
 
     //===================== Parameters ======================//
     localparam VADDR = 39;
 
     //===================== Internal Signals ====================//
-    reg                  imem_rvalid_i;
-    reg  [31:0]          imem_rdata_i;
+    reg                  imem_rvalid_reg;
+    reg  [31:0]          imem_rdata_reg;
+    reg                  imem_gnt_reg;
+    
+    reg                  dmem_rvalid_reg;
+    reg  [`XLEN-1:0]     dmem_rdata_reg;
+    reg                  dmem_gnt_reg;
+    
+    assign imem_rvalid_i = imem_rvalid_reg;
+    assign imem_rdata_i = imem_rdata_reg;
+    assign imem_gnt_i = imem_gnt_reg;
+    assign dmem_rvalid_i = dmem_rvalid_reg;
+    assign dmem_rdata_i = dmem_rdata_reg;
+    assign dmem_gnt_i = dmem_gnt_reg;
 
 
     //===================== IMEM Model ======================//
@@ -56,7 +68,7 @@ module cpu64_core_w_dcache_tb(
     reg [7:0] imem_delay_cnt;
 
     // Grant is combinational based on pending status
-    assign imem_gnt_i = imem_req_o && !imem_pending;
+    assign imem_gnt_reg = imem_req_o && !imem_pending;
 
     // Optional: widen address for indexing (zero-extend virtual address)
     wire [63:0] imem_addr_64 = { {(64-VADDR){1'b0}}, imem_addr_ao };
@@ -85,16 +97,16 @@ module cpu64_core_w_dcache_tb(
     end
 
     // IMEM read response timing
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            imem_rvalid_i   <= 1'b0;
-            imem_rdata_i    <= 32'd0;
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            imem_rvalid_reg <= 1'b0;
+            imem_rdata_reg  <= 32'd0;
             imem_last_addr  <= {VADDR{1'b0}};
             imem_pending    <= 1'b0;
             imem_delay_cnt  <= 8'd0;
         end else begin
             // Default deassert rvalid unless we hit response point this cycle
-            imem_rvalid_i <= 1'b0;
+            imem_rvalid_reg <= 1'b0;
 
             // Service outstanding request first
             if (imem_pending) begin
@@ -102,9 +114,9 @@ module cpu64_core_w_dcache_tb(
                     imem_delay_cnt <= imem_delay_cnt - 1'b1;
                 end else begin
                     // Issue read data
-                    imem_rdata_i  <= instruction_memory[imem_last_addr[31:2]];
-                    imem_rvalid_i <= 1'b1;
-                    imem_pending  <= 1'b0;
+                    imem_rdata_reg  <= instruction_memory[imem_last_addr[31:2]];
+                    imem_rvalid_reg <= 1'b1;
+                    imem_pending    <= 1'b0;
                 end
             end
             
@@ -164,7 +176,7 @@ module cpu64_core_w_dcache_tb(
 
     // Simple grant: accept if allowed by stall pattern
     wire dmem_stall = DMEM_STALL_PATTERN[dmem_addr_64[5:2]]; // small pseudo-stall by low addr bits
-    assign dmem_gnt_i = dmem_req_o && (!dmem_stall);
+    assign dmem_gnt_reg = dmem_req_o && (!dmem_stall);
 
     reg        dmem_pending;
     reg [7:0]  dmem_delay_cnt;
@@ -175,10 +187,10 @@ module cpu64_core_w_dcache_tb(
 
     integer dmem_b;
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            dmem_rvalid_i     <= 1'b0;
-            dmem_rdata_i      <= 64'd0;
+    always @(posedge clk_i or negedge rst_ni) begin
+        if (!rst_ni) begin
+            dmem_rvalid_reg   <= 1'b0;
+            dmem_rdata_reg    <= 64'd0;
             dmem_pending      <= 1'b0;
             dmem_delay_cnt    <= 8'd0;
             dmem_latched_addr <= 64'd0;
@@ -186,7 +198,7 @@ module cpu64_core_w_dcache_tb(
             dmem_latched_wdata<= 64'd0;
             dmem_latched_we   <= 1'b0;
         end else begin
-            dmem_rvalid_i <= 1'b0;
+            dmem_rvalid_reg <= 1'b0;
 
             // Accept a new transaction
             if (dmem_req_o && dmem_gnt_i && !dmem_pending) begin
@@ -213,11 +225,11 @@ module cpu64_core_w_dcache_tb(
                         end
                         dmem_memory[dmem_latched_addr[63:3]] <= dmem_tmp;
                         // For writes, no rvalid_o asserted
-                        dmem_rvalid_i <= 1'b0;
+                        dmem_rvalid_reg <= 1'b0;
                     end else begin
                         // Read
-                        dmem_rdata_i  <= dmem_memory[dmem_latched_addr[63:3]];
-                        dmem_rvalid_i <= 1'b1;
+                        dmem_rdata_reg  <= dmem_memory[dmem_latched_addr[63:3]];
+                        dmem_rvalid_reg <= 1'b1;
                     end
                     dmem_pending <= 1'b0;
                 end
@@ -228,3 +240,5 @@ module cpu64_core_w_dcache_tb(
 
 
 endmodule
+
+
