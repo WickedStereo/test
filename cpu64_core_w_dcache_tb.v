@@ -3,65 +3,39 @@
 
 `include "cpu64_defs.vh"
 
-module cpu64_core_w_dcache_tb_stripped(
+module cpu64_core_w_dcache_tb(
     input clk,
-    input rst_n
+    input rst_n,
+    // DUT interface ports
+    input                  m_ext_inter_i,
+    input                  m_soft_inter_i,
+    input                  m_timer_inter_i,
+    input  [`XLEN-1:0]     time_i,
+    output                 fencei_flush_ao,
+    // IMEM interface
+    output                 imem_req_o,
+    output [VADDR-1:0]     imem_addr_ao,
+    input                  imem_gnt_i,
+    input                  imem_rvalid_i,
+    input  [31:0]          imem_rdata_i,
+    // DMEM interface
+    output                 dmem_req_o,
+    output                 dmem_we_ao,
+    output [7:0]           dmem_be_ao,
+    output [VADDR-1:0]     dmem_addr_ao,
+    output [`XLEN-1:0]     dmem_wdata_ao,
+    input                  dmem_rvalid_i,
+    input  [`XLEN-1:0]     dmem_rdata_i,
+    input                  dmem_gnt_i
 );
 
     //===================== Parameters ======================//
     localparam VADDR = 39;
 
-    //===================== IMEM Signals ====================//
-    wire                 imem_req_o;
-    wire [VADDR-1:0]     imem_addr_ao;
-    wire                 imem_gnt_i;
+    //===================== Internal Signals ====================//
     reg                  imem_rvalid_i;
     reg  [31:0]          imem_rdata_i;
 
-    //===================== DMEM Signals ====================//
-    wire                 dmem_req_o;
-    wire                 dmem_we_ao;
-    wire [7:0]           dmem_be_ao;
-    wire [VADDR-1:0]     dmem_addr_ao;
-    wire [`XLEN-1:0]     dmem_wdata_ao;
-    wire                 dmem_rvalid_i;
-    wire [`XLEN-1:0]     dmem_rdata_i;
-    wire                 dmem_gnt_i;
-
-    //===================== External Signals ================//
-    reg                  m_ext_inter_i;
-    reg                  m_soft_inter_i;
-    reg                  m_timer_inter_i;
-    reg  [`XLEN-1:0]     time_i;
-    wire                 fencei_flush_ao;
-
-    //===================== DUT =============================//
-    cpu64_core_w_dcache #(.VADDR(VADDR), .RESET_ADDR(0)) dut (
-        .clk_i                 (clk),
-        .rst_ni                (rst_n),
-        .m_ext_inter_i         (m_ext_inter_i),
-        .m_soft_inter_i        (m_soft_inter_i),
-        .m_timer_inter_i       (m_timer_inter_i),
-        .time_i                (time_i),
-        .fencei_flush_ao       (fencei_flush_ao),
-        // IMEM
-        .imem_req_o            (imem_req_o),
-        .imem_gnt_i            (imem_gnt_i),
-        .imem_addr_ao          (imem_addr_ao),
-        .imem_rvalid_i         (imem_rvalid_i),
-        .imem_rdata_i          (imem_rdata_i),
-        // DMEM (external behind cache stack)
-        .dmem_req_o            (dmem_req_o),
-        .dmem_gnt_i            (dmem_gnt_i),
-        .dmem_addr_ao          (dmem_addr_ao),
-        .dmem_we_ao            (dmem_we_ao),
-        .dmem_be_ao            (dmem_be_ao),
-        .dmem_wdata_ao         (dmem_wdata_ao),
-        .dmem_rvalid_i         (dmem_rvalid_i),
-        .dmem_rdata_i          (dmem_rdata_i),
-        // Cache maintenance
-        .dcache_invalidate_all_i(1'b0)
-    );
 
     //===================== IMEM Model ======================//
 
@@ -146,25 +120,111 @@ module cpu64_core_w_dcache_tb_stripped(
     //===================== DMEM Model ======================//
     wire [63:0] dmem_addr_64 = { {(64-VADDR){1'b0}}, dmem_addr_ao };
 
-    obi_mem_model_adv #(
-        .MEM_BYTES    (1<<20),
-        .READ_LATENCY (2),
-        .WRITE_ACCEPT (1),
-        .STALL_PATTERN(16'h0000)
-    ) i_dmem_model (
-        .clk_i    (clk),
-        .rst_ni   (rst_n),
-        .req_i    (dmem_req_o),
-        .we_i     (dmem_we_ao),
-        .be_i     (dmem_be_ao),
-        .addr_i   (dmem_addr_64),
-        .wdata_i  (dmem_wdata_ao),
-        .gnt_o    (dmem_gnt_i),
-        .rvalid_o (dmem_rvalid_i),
-        .rdata_o  (dmem_rdata_i)
-    );
+    // Inline OBI memory model implementation
+    localparam integer DMEM_BYTES = (1<<20);
+    localparam integer DMEM_WORDS = DMEM_BYTES/8;
+    localparam integer DMEM_READ_LATENCY = 2;
+    localparam [15:0] DMEM_STALL_PATTERN = 16'h0000;
+    
+    reg [63:0] dmem_memory [0:DMEM_WORDS-1];
+    
+    // Pre-initialize memory with known test patterns
+    initial begin
+        integer i;
+        // Initialize all memory to zero first
+        for (i = 0; i < DMEM_WORDS; i = i + 1) begin
+            dmem_memory[i] = 64'd0;
+        end
+        
+        // Pre-load specific test addresses with known patterns
+        // Address 0x10000 (word index 0x2000) = 0xDEADBEEF_DEADBEEF
+        dmem_memory[20'h02000] = 64'hDEADBEEF_DEADBEEF;
+        
+        // Address 0x10008 (word index 0x2001) = 0xCAFEBABE_CAFEBABE
+        dmem_memory[20'h02001] = 64'hCAFEBABE_CAFEBABE;
+        
+        // Address 0x10010 (word index 0x2002) = 0x11111111_11111111
+        dmem_memory[20'h02002] = 64'h11111111_11111111;
+        
+        // Address 0x10018 (word index 0x2003) = 0x22222222_22222222
+        dmem_memory[20'h02003] = 64'h22222222_22222222;
+        
+        // Address 0x20000 (word index 0x4000) = 0x12345678_12345678
+        dmem_memory[20'h04000] = 64'h12345678_12345678;
+        
+        // Address 0x20008 (word index 0x4001) = 0x87654321_87654321
+        dmem_memory[20'h04001] = 64'h87654321_87654321;
+        
+        // Address 0x30000 (word index 0x6000) = 0xAAAAAAAA_AAAAAAAA
+        dmem_memory[20'h06000] = 64'hAAAAAAAA_AAAAAAAA;
+        
+        // Address 0x30008 (word index 0x6001) = 0xBBBBBBBB_BBBBBBBB
+        dmem_memory[20'h06001] = 64'hBBBBBBBB_BBBBBBBB;
+    end
+
+    // Simple grant: accept if allowed by stall pattern
+    wire dmem_stall = DMEM_STALL_PATTERN[dmem_addr_64[5:2]]; // small pseudo-stall by low addr bits
+    assign dmem_gnt_i = dmem_req_o && (!dmem_stall);
+
+    reg        dmem_pending;
+    reg [7:0]  dmem_delay_cnt;
+    reg [63:0] dmem_latched_addr;
+    reg [7:0]  dmem_latched_be;
+    reg [63:0] dmem_latched_wdata;
+    reg        dmem_latched_we;
+
+    integer dmem_b;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            dmem_rvalid_i     <= 1'b0;
+            dmem_rdata_i      <= 64'd0;
+            dmem_pending      <= 1'b0;
+            dmem_delay_cnt    <= 8'd0;
+            dmem_latched_addr <= 64'd0;
+            dmem_latched_be   <= 8'd0;
+            dmem_latched_wdata<= 64'd0;
+            dmem_latched_we   <= 1'b0;
+        end else begin
+            dmem_rvalid_i <= 1'b0;
+
+            // Accept a new transaction
+            if (dmem_req_o && dmem_gnt_i && !dmem_pending) begin
+                dmem_latched_addr  <= dmem_addr_64;
+                dmem_latched_we    <= dmem_we_ao;
+                dmem_latched_be    <= dmem_be_ao;
+                dmem_latched_wdata <= dmem_wdata_ao;
+                dmem_pending       <= 1'b1;
+                dmem_delay_cnt     <= DMEM_READ_LATENCY[7:0];
+            end
+
+            if (dmem_pending) begin
+                if (dmem_delay_cnt != 0) begin
+                    dmem_delay_cnt <= dmem_delay_cnt - 8'd1;
+                end else begin
+                    if (dmem_latched_we) begin
+                        // Perform write with byte enables
+                        reg [63:0] dmem_tmp;
+                        dmem_tmp = dmem_memory[dmem_latched_addr[63:3]];
+                        for (dmem_b = 0; dmem_b < 8; dmem_b = dmem_b + 1) begin
+                            if (dmem_latched_be[dmem_b]) begin
+                                dmem_tmp[8*dmem_b +: 8] = dmem_latched_wdata[8*dmem_b +: 8];
+                            end
+                        end
+                        dmem_memory[dmem_latched_addr[63:3]] <= dmem_tmp;
+                        // For writes, no rvalid_o asserted
+                        dmem_rvalid_i <= 1'b0;
+                    end else begin
+                        // Read
+                        dmem_rdata_i  <= dmem_memory[dmem_latched_addr[63:3]];
+                        dmem_rvalid_i <= 1'b1;
+                    end
+                    dmem_pending <= 1'b0;
+                end
+            end
+        end
+    end
+
 
 
 endmodule
-
-
