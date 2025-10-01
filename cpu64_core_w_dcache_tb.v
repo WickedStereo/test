@@ -1,22 +1,15 @@
-// cpu64_core_w_dcache_tb.v - Verilator-friendly TB: clock/reset driven by C++
+// cpu64_core_w_dcache_tb_stripped.v - Minimal functional testbench
 `timescale 1ns/1ps
 
 `include "cpu64_defs.vh"
 
-module cpu64_core_w_dcache_tb(
+module cpu64_core_w_dcache_tb_stripped(
     input clk,
     input rst_n
 );
 
     //===================== Parameters ======================//
     localparam VADDR = 39;
-
-    // QUIET plusarg to suppress verbose console output
-    reg quiet_mode;
-    initial begin
-        quiet_mode = 1'b0;
-        void'($value$plusargs("QUIET=%d", quiet_mode));
-    end
 
     //===================== IMEM Signals ====================//
     wire                 imem_req_o;
@@ -84,9 +77,6 @@ module cpu64_core_w_dcache_tb(
     // Track last accepted address for debug/program-finish detection
     reg [VADDR-1:0] imem_last_addr;
 
-    // Hex program loading
-    reg [1023:0] hex_path;
-
     // Accept at most one outstanding read; grant only when not pending
     reg imem_pending;
     reg [7:0] imem_delay_cnt;
@@ -97,25 +87,27 @@ module cpu64_core_w_dcache_tb(
     // Optional: widen address for indexing (zero-extend virtual address)
     wire [63:0] imem_addr_64 = { {(64-VADDR){1'b0}}, imem_addr_ao };
 
-    // Load program from +HEX=<path> (default to hex/comprehensive_program.hex)
+    // Manually load store_demo.hex program
     initial begin
         integer i;
+        // Initialize all memory with NOPs
         for (i = 0; i < IMEM_WORDS; i = i + 1) begin
             instruction_memory[i] = 32'h00000013; // NOP (addi x0,x0,0)
         end
-        if (!$value$plusargs("HEX=%s", hex_path)) begin
-            hex_path = "hex/comprehensive_program.hex";
-        end
-        if (!quiet_mode) $display("IMEM: Loading hex file: %0s", hex_path);
-        $readmemh(hex_path, instruction_memory);
         
-        // Debug: Display first 20 loaded instructions
-        if (!quiet_mode) begin
-            $display("IMEM: First 20 instructions loaded:");
-            for (i = 0; i < 20; i = i + 1) begin
-                $display("  [%2d] addr=0x%02h: 0x%08h", i, i*4, instruction_memory[i]);
-            end
-        end
+        // Load store_demo.hex program manually
+        instruction_memory[0]  = 32'h00010537; // lui  a0, 0x10          ; a0 = 0x0000000000010000
+        instruction_memory[1]  = 32'h00053283; // ld   x5,  0(a0)        ; x5  = [0x10000] = DEADBEEF_DEADBEEF
+        instruction_memory[2]  = 32'h00853303; // ld   x6,  8(a0)        ; x6  = [0x10008] = CAFEBABE_CAFEBABE
+        instruction_memory[3]  = 32'h01053683; // ld   x13, 16(a0)       ; x13 = [0x10010] = 11111111_11111111
+        instruction_memory[4]  = 32'h01853703; // ld   x14, 24(a0)       ; x14 = [0x10018] = 22222222_22222222
+        instruction_memory[5]  = 32'h000205B7; // lui  a1, 0x20          ; a1 = 0x0000000000020000
+        instruction_memory[6]  = 32'h0005B383; // ld   x7,  0(a1)        ; x7  = [0x20000] = 12345678_12345678
+        instruction_memory[7]  = 32'h0085B403; // ld   x8,  8(a1)        ; x8  = [0x20008] = 87654321_87654321
+        instruction_memory[8]  = 32'h00030637; // lui  a2, 0x30          ; a2 = 0x0000000000030000
+        instruction_memory[9]  = 32'h00063483; // ld   x9,  0(a2)        ; x9  = [0x30000] = AAAAAAAAAAAAAAAA
+        instruction_memory[10] = 32'h00863503; // ld   x10, 8(a2)        ; x10 = [0x30008] = BBBBBBBBBBBBBBBB
+        instruction_memory[11] = 32'h00100073; // ebreak
     end
 
     // IMEM read response timing
@@ -139,8 +131,6 @@ module cpu64_core_w_dcache_tb(
                     imem_rdata_i  <= instruction_memory[imem_last_addr[31:2]];
                     imem_rvalid_i <= 1'b1;
                     imem_pending  <= 1'b0;
-                    if (!quiet_mode) $display("[Cycle %0d] IMEM: Response addr=0x%0h word_idx=%0d inst=0x%08h", 
-                             time_i, imem_last_addr, imem_last_addr[31:2], instruction_memory[imem_last_addr[31:2]]);
                 end
             end
             
@@ -150,8 +140,6 @@ module cpu64_core_w_dcache_tb(
                 imem_last_addr <= imem_addr_ao;
                 imem_pending   <= 1'b1;
                 imem_delay_cnt <= IMEM_READ_LATENCY[7:0];
-                if (!quiet_mode) $display("[Cycle %0d] IMEM: Fetch request addr=0x%0h (word_idx=%0d)", 
-                         time_i, imem_addr_ao, imem_addr_ao[31:2]);
             end
         end
     end
@@ -175,151 +163,6 @@ module cpu64_core_w_dcache_tb(
         .rvalid_o (dmem_rvalid_i),
         .rdata_o  (dmem_rdata_i)
     );
-
-    //===================== Defaults/Time ===================//
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            m_ext_inter_i  <= 1'b0;
-            m_soft_inter_i <= 1'b0;
-            m_timer_inter_i<= 1'b0;
-            time_i         <= '0;
-        end else begin
-            time_i         <= time_i + 1'b1;
-        end
-    end
-
-    //===================== Program Completion Monitor ===================//
-    reg program_finished = 0;
-    reg [7:0] finish_delay = 0;
-    
-    always @(posedge clk) begin
-        // Monitor for ebreak instruction (0x00100073)
-        if (imem_rvalid_i && instruction_memory[imem_last_addr[31:2]] == 32'h00100073 && !program_finished) begin
-            $display("PROGRAM: ebreak instruction executed - program finished");
-            program_finished <= 1;
-            finish_delay <= 10;
-        end
-        
-        // Wait a few cycles before dumping final state
-        if (program_finished && finish_delay > 0) begin
-            finish_delay <= finish_delay - 1;
-        end else if (program_finished && finish_delay == 0) begin
-            integer fd, i;
-            integer fd_regs, ri;
-            
-            
-            // Write to file
-            fd = $fopen("obj_dir/memory_dump.txt", "w");
-            $fwrite(fd, "==============================================\n");
-            $fwrite(fd, "   CPU64 Memory Dump - Final State\n");
-            $fwrite(fd, "==============================================\n\n");
-            $fwrite(fd, "=== EXTERNAL MEMORY (Pre-initialized) ===\n");
-            $fwrite(fd, "Address  | Value (Hex)          | Value (Dec)\n");
-            $fwrite(fd, "---------+----------------------+-------------\n");
-            $fwrite(fd, "0x10000 | 0x%016h | %0d\n", i_dmem_model.mem[20'h02000], $signed(i_dmem_model.mem[20'h02000]));
-            $fwrite(fd, "0x10008 | 0x%016h | %0d\n", i_dmem_model.mem[20'h02001], $signed(i_dmem_model.mem[20'h02001]));
-            $fwrite(fd, "0x20000 | 0x%016h | %0d\n", i_dmem_model.mem[20'h04000], $signed(i_dmem_model.mem[20'h04000]));
-            $fwrite(fd, "0x20008 | 0x%016h | %0d\n", i_dmem_model.mem[20'h04001], $signed(i_dmem_model.mem[20'h04001]));
-            $fwrite(fd, "0x30000 | 0x%016h | %0d\n", i_dmem_model.mem[20'h06000], $signed(i_dmem_model.mem[20'h06000]));
-            $fwrite(fd, "\n==============================================\n");
-            $fwrite(fd, "Total execution cycles: %0d\n", time_i);
-            $fwrite(fd, "==============================================\n");
-            $fclose(fd);
-            $display("INFO: Memory dump written to memory_dump.txt");
-
-            // Register dump: x0..x31 → obj_dir/register_dump.txt
-            fd_regs = $fopen("obj_dir/register_dump.txt", "w");
-            if (fd_regs) begin
-                $fwrite(fd_regs, "==============================================\n");
-                $fwrite(fd_regs, "   CPU64 Register Dump - Final State\n");
-                $fwrite(fd_regs, "==============================================\n\n");
-                $fwrite(fd_regs, "Reg  | Value (Hex)          | Value (Dec)\n");
-                $fwrite(fd_regs, "-----+----------------------+-------------\n");
-                // x0 is hardwired to zero
-                $fwrite(fd_regs, "x00  | 0x%016h | %0d\n", 64'h0, 64'd0);
-                for (ri = 1; ri <= 31; ri = ri + 1) begin
-                    $fwrite(fd_regs, "x%02d  | 0x%016h | %0d\n", ri,
-                        dut.u_core.i_register_file.RF[ri], $signed(dut.u_core.i_register_file.RF[ri]));
-                end
-                $fclose(fd_regs);
-                $display("INFO: Register dump written to register_dump.txt");
-            end
-            
-            // Cache dumps: L1/L2/L3 → obj_dir/cache_dump_*.txt
-            begin : cache_dumps_block
-                integer fd_l1, fd_l2, fd_l3;
-                integer si, wi, wordi;
-                reg [63:0] data_word;
-                reg [63:0] addr_line, addr_word;
-                // L1
-                fd_l1 = $fopen("obj_dir/cache_dump_L1.txt", "w");
-                if (fd_l1) begin
-                    $fwrite(fd_l1, "set way word valid dirty tag addr data\n");
-                    for (si = 0; si < 64; si = si + 1) begin
-                        for (wi = 0; wi < 8; wi = wi + 1) begin
-                            addr_line = { dut.u_cache_stack.u_l1.u_arrays.tag_q[wi][si], si[5:0], 6'b0 };
-                            for (wordi = 0; wordi < 8; wordi = wordi + 1) begin
-                                data_word = dut.u_cache_stack.u_l1.u_arrays.data_q[wi][si*8 + wordi];
-                                addr_word = addr_line + (wordi << 3);
-                                $fwrite(fd_l1, "%0d %0d %0d %0d %0d 0x%013h 0x%016h 0x%016h\n",
-                                    si, wi, wordi,
-                                    dut.u_cache_stack.u_l1.u_arrays.valid_q[wi][si],
-                                    dut.u_cache_stack.u_l1.u_arrays.dirty_q[wi][si],
-                                    dut.u_cache_stack.u_l1.u_arrays.tag_q[wi][si],
-                                    addr_word, data_word);
-                            end
-                        end
-                    end
-                    $fclose(fd_l1);
-                end
-                // L2
-                fd_l2 = $fopen("obj_dir/cache_dump_L2.txt", "w");
-                if (fd_l2) begin
-                    $fwrite(fd_l2, "set way word valid dirty tag addr data\n");
-                    for (si = 0; si < 256; si = si + 1) begin
-                        for (wi = 0; wi < 16; wi = wi + 1) begin
-                            addr_line = { dut.u_cache_stack.u_l2.u_arrays.tag_q[wi][si], si[7:0], 6'b0 };
-                            for (wordi = 0; wordi < 8; wordi = wordi + 1) begin
-                                data_word = dut.u_cache_stack.u_l2.u_arrays.data_q[wi][si*8 + wordi];
-                                addr_word = addr_line + (wordi << 3);
-                                $fwrite(fd_l2, "%0d %0d %0d %0d %0d 0x%013h 0x%016h 0x%016h\n",
-                                    si, wi, wordi,
-                                    dut.u_cache_stack.u_l2.u_arrays.valid_q[wi][si],
-                                    dut.u_cache_stack.u_l2.u_arrays.dirty_q[wi][si],
-                                    dut.u_cache_stack.u_l2.u_arrays.tag_q[wi][si],
-                                    addr_word, data_word);
-                            end
-                        end
-                    end
-                    $fclose(fd_l2);
-                end
-                // L3
-                fd_l3 = $fopen("obj_dir/cache_dump_L3.txt", "w");
-                if (fd_l3) begin
-                    $fwrite(fd_l3, "set way word valid dirty tag addr data\n");
-                    for (si = 0; si < 2048; si = si + 1) begin
-                        for (wi = 0; wi < 16; wi = wi + 1) begin
-                            addr_line = { dut.u_cache_stack.u_l3.u_arrays.tag_q[wi][si], si[10:0], 6'b0 };
-                            for (wordi = 0; wordi < 8; wordi = wordi + 1) begin
-                                data_word = dut.u_cache_stack.u_l3.u_arrays.data_q[wi][si*8 + wordi];
-                                addr_word = addr_line + (wordi << 3);
-                                $fwrite(fd_l3, "%0d %0d %0d %0d %0d 0x%013h 0x%016h 0x%016h\n",
-                                    si, wi, wordi,
-                                    dut.u_cache_stack.u_l3.u_arrays.valid_q[wi][si],
-                                    dut.u_cache_stack.u_l3.u_arrays.dirty_q[wi][si],
-                                    dut.u_cache_stack.u_l3.u_arrays.tag_q[wi][si],
-                                    addr_word, data_word);
-                            end
-                        end
-                    end
-                    $fclose(fd_l3);
-                end
-            end
-            
-
-            $finish;
-        end
-    end
 
 
 endmodule
