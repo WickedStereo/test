@@ -1,6 +1,6 @@
 // Unified OBI memory model supporting both instruction and data memory
 // Provides separate address spaces for Harvard architecture simulation
-// `timescale 1ns/1ps
+`timescale 1ns/1ps
 
 module obi_mem_model_unified #(
     parameter integer IMEM_BYTES     = (1<<20),     // 1MB instruction memory
@@ -202,28 +202,13 @@ module obi_mem_model_unified #(
     end
 
     // Task to load instruction memory from hex file
+    // DISABLED: Hex file is now pre-loaded directly into icache arrays
+    // This avoids duplication and ensures core runs from pre-loaded icache
     task load_imem_hex;
         input [1023:0] filename;
-        reg [31:0] temp_mem [0:IMEM_BYTES/4-1];  // 32-bit word array for $readmemh
-        integer i;
     begin
-        // Read 32-bit words
-        $readmemh(filename, temp_mem);
-        
-        // Pack into 64-bit words (little-endian)
-        for (i = 0; i < IMEM_WORDS; i = i + 1) begin
-            imem[i] = {temp_mem[i*2 + 1], temp_mem[i*2]};
-        end
-        
-        $display("IMEM: Loaded hex file: %s", filename);
-        
-        // Show first few instructions
-        if (!quiet_mode) begin
-            $display("IMEM: First 8 words loaded:");
-            for (i = 0; i < 8; i = i + 1) begin
-                $display("  [0x%h] = 0x%h", i*8, imem[i]);
-            end
-        end
+        $display("IMEM: Hex loading disabled - program pre-loaded in icache arrays");
+        $display("IMEM: Program should run from icache without memory model requests");
     end
     endtask
 

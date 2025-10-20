@@ -1,4 +1,4 @@
-`define ICACHE_DBG
+// `define ICACHE_DBG  // Disable verbose MON/DELIVER prints by default
 // `include "cpu64_l1i_arrays.v"
 // `include "cpu64_l1_plru.v"
 // `timescale 1ns/1ps

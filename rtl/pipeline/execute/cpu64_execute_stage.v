@@ -413,14 +413,6 @@ module cpu64_execute_stage #(parameter VADDR = 39) (
     assign branch_o      = valid && ( is_unconditional_flow || (branch_taken && branch_i) || fencei_ao ) && ~stall_i;
     assign target_addr_o = fencei_ao ? next_pc_i : (is_unconditional_flow || (branch_taken && branch_i)) ? I_alu_res[VADDR-1:0] : '0;  // Branch target address
 
-    // DEBUG: Print ALL branches
-    always @(posedge clk_i) begin
-        if (branch_o) begin
-            $display("[%0t cyc=%0d] BRANCH_O: PC=%h target=%h cond=%b uncond=%b taken=%b",
-                     $time, $time/2, pc_i, I_alu_res[VADDR-1:0], branch_i && (br_cond_1h_i != 6'b0), is_unconditional_flow, branch_taken);
-        end
-    end
-
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //                                    Traps and Exceptions                                   //
